@@ -5,6 +5,7 @@
 mod blast;
 mod database;
 mod fasta;
+mod getdb;
 mod report;
 mod summary;
 
@@ -41,6 +42,17 @@ struct Args {
     #[arg(long)]
     identity: bool,
 
+    /// Download and set up a database from the internet.
+    /// Available: resfinder, plasmidfinder, megares, argannot, card, ncbi,
+    /// vfdb, ecoli_vf, upec_expec_vf, ecoh, bacmet2, victors
+    /// Use 'list' to show available databases
+    #[arg(long, value_name = "DATABASE")]
+    getdb: Option<String>,
+
+    /// Force re-download even if database already exists
+    #[arg(long)]
+    force: bool,
+
     /// Database to use [default: ncbi]
     #[arg(long, default_value = "ncbi")]
     db: String,
@@ -50,7 +62,9 @@ struct Args {
     datadir: Option<String>,
 
     /// Directory containing BLAST+ binaries (blastn, makeblastdb, etc.)
-    /// Can also be set via ABRICATE_BLAST_DIR environment variable
+    /// Can also be set via ABRICATE_BLAST_DIR environment variable.
+    /// On Linux/macOS: optional (will use PATH if not specified).
+    /// On Windows: required if BLAST+ is not in PATH.
     #[arg(long)]
     blastdir: Option<String>,
 
@@ -106,6 +120,18 @@ fn run(args: Args) -> Result<()> {
 
     if args.list {
         return run_list(&args);
+    }
+
+    // --getdb: download and set up a database
+    if let Some(db_name) = &args.getdb {
+        if db_name == "list" {
+            eprintln!("Available databases for download:");
+            for db in getdb::AVAILABLE_DATABASES {
+                eprintln!("  {}", db);
+            }
+            return Ok(());
+        }
+        return run_getdb(&args, db_name);
     }
 
     if args.setupdb {
@@ -212,16 +238,7 @@ fn run_list(args: &Args) -> Result<()> {
 fn run_setupdb(args: &Args) -> Result<()> {
     let datadir = database::resolve_datadir(args.datadir.as_deref())?;
     let paths = blast::BlastPaths::resolve(args.blastdir.as_deref())?;
-
-    // Check if BLAST is available
-    let checks = paths.check();
-    let blast_ok = checks.iter().all(|(_, found)| *found);
-    if !blast_ok {
-        anyhow::bail!(
-            "BLAST+ binaries not found. Use --blastdir <PATH> or set ABRICATE_BLAST_DIR environment variable.\n\
-             Example: abricate --blastdir /path/to/ncbi-blast/bin --setupdb"
-        );
-    }
+    paths.require_blast()?;
 
     if args.db != "ncbi" {
         // Setup specific database
@@ -230,6 +247,39 @@ fn run_setupdb(args: &Args) -> Result<()> {
         // Setup all databases
         database::setup_all_databases(&datadir, &paths)?;
     }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// --getdb: download and set up a database
+// ---------------------------------------------------------------------------
+fn run_getdb(args: &Args, db_name: &str) -> Result<()> {
+    // For getdb, create the datadir if it doesn't exist
+    let datadir = if let Some(d) = &args.datadir {
+        let p = std::path::PathBuf::from(d);
+        if !p.exists() {
+            std::fs::create_dir_all(&p)?;
+        }
+        p
+    } else if let Ok(env_dir) = std::env::var("ABRICATE_DATADIR") {
+        let p = std::path::PathBuf::from(&env_dir);
+        if !p.exists() {
+            std::fs::create_dir_all(&p)?;
+        }
+        p
+    } else {
+        let p = database::resolve_datadir(None)?;
+        if !p.exists() {
+            std::fs::create_dir_all(&p)?;
+        }
+        p
+    };
+
+    let paths = blast::BlastPaths::resolve(args.blastdir.as_deref())?;
+    paths.require_blast()?;
+
+    getdb::download_database(db_name, &datadir, args.force, &paths)?;
 
     Ok(())
 }
@@ -265,16 +315,7 @@ fn run_detect(args: &Args) -> Result<()> {
     // Resolve paths
     let datadir = database::resolve_datadir(args.datadir.as_deref())?;
     let paths = blast::BlastPaths::resolve(args.blastdir.as_deref())?;
-
-    // Check BLAST availability
-    let checks = paths.check();
-    let blast_ok = checks.iter().all(|(_, found)| *found);
-    if !blast_ok {
-        anyhow::bail!(
-            "BLAST+ binaries not found. Use --blastdir <PATH> or set ABRICATE_BLAST_DIR environment variable.\n\
-             Example: abricate --blastdir D:/code/ncbi-blast-2.17.0+/bin input.fasta"
-        );
-    }
+    paths.require_blast()?;
 
     // Get database path
     let db_path = database::get_db_path(&datadir, &args.db)?;

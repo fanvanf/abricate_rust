@@ -43,7 +43,14 @@ pub struct BlastPaths {
 }
 
 impl BlastPaths {
-    /// Resolve BLAST+ binary paths from --blastdir, env var, or PATH
+    /// Resolve BLAST+ binary paths from --blastdir, env var, or PATH.
+    ///
+    /// Platform behavior:
+    /// - If `--blastdir` or `ABRICATE_BLAST_DIR` is set, use that directory.
+    /// - Otherwise, try to find `blastn` in PATH.
+    /// - On non-Windows (Linux/macOS): if found in PATH, use bare command names.
+    /// - On Windows: if not found in PATH, still returns bare names but
+    ///   `require_blast()` will give a platform-specific error.
     pub fn resolve(blastdir: Option<&str>) -> Result<Self> {
         let dir = blastdir
             .map(|s| s.to_string())
@@ -61,7 +68,20 @@ impl BlastPaths {
                 d.join(format!("blastdbcmd{}", exe_suffix)),
             )
         } else {
-            // Try to find in PATH
+            // Try to find blastn in PATH
+            let in_path = Command::new(format!("blastn{}", exe_suffix))
+                .arg("-help")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok();
+
+            if in_path {
+                eprintln!("  BLAST+ found in PATH");
+            } else if cfg!(windows) {
+                eprintln!("  WARNING: BLAST+ not found in PATH. On Windows, use --blastdir <PATH>.");
+            }
+
             (
                 PathBuf::from(format!("blastn{}", exe_suffix)),
                 PathBuf::from(format!("blastx{}", exe_suffix)),
@@ -70,7 +90,6 @@ impl BlastPaths {
             )
         };
 
-        // Verify at least blastn and makeblastdb are accessible
         let paths = BlastPaths {
             blastn,
             blastx,
@@ -79,6 +98,38 @@ impl BlastPaths {
         };
 
         Ok(paths)
+    }
+
+    /// Verify that BLAST+ is available. Returns error with platform-specific message.
+    pub fn require_blast(&self) -> Result<()> {
+        let checks = self.check();
+        let missing: Vec<&str> = checks
+            .iter()
+            .filter(|(_, found)| !found)
+            .map(|(name, _)| name.as_str())
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        if cfg!(windows) {
+            anyhow::bail!(
+                "BLAST+ binaries not found: {}\n\
+                 On Windows, you must specify the BLAST+ bin directory:\n\
+                 abricate --blastdir C:/path/to/ncbi-blast/bin [options]\n\
+                 Or set the ABRICATE_BLAST_DIR environment variable.",
+                missing.join(", ")
+            );
+        } else {
+            anyhow::bail!(
+                "BLAST+ binaries not found: {}\n\
+                 Install BLAST+ (e.g., 'conda install blast' or 'apt install ncbi-blast+')\n\
+                 Or specify the bin directory: abricate --blastdir /path/to/blast/bin [options]\n\
+                 Or set the ABRICATE_BLAST_DIR environment variable.",
+                missing.join(", ")
+            );
+        }
     }
 
     /// Check if all required BLAST binaries are accessible
@@ -160,13 +211,23 @@ pub fn detect_db_type(sequences_path: &Path) -> Result<&'static str> {
 pub fn make_blast_db(paths: &BlastPaths, sequences_path: &Path, db_type: &str) -> Result<()> {
     let dbtype = if db_type == "prot" { "prot" } else { "nucl" };
 
+    // Use the parent directory name as the database title
+    let title = sequences_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "abricate_db".to_string());
+
     // makeblastdb creates files with the same prefix as the input (without extension)
     // We use the sequences path itself as the db prefix
     let output = Command::new(&paths.makeblastdb)
         .arg("-in")
         .arg(sequences_path)
+        .arg("-title")
+        .arg(&title)
         .arg("-dbtype")
         .arg(dbtype)
+        .arg("-hash_index")
         .arg("-parse_seqids")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
