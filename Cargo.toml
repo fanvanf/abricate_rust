@@ -1,0 +1,30 @@
+[package]
+name = "abricate_rust"
+version = "1.0.0"
+edition = "2021"
+authors = ["abricate_rust contributors"]
+description = "Rust implementation of ABRicate - mass screening of contigs for antimicrobial resistance or virulence genes"
+license = "GPL-2.0"
+repository = "https://github.com/fanvanf/abricate_rust"
+keywords = ["bioinformatics", "blast", "amr", "resistance", "genomics"]
+categories = ["science", "command-line-utilities"]
+
+[[bin]]
+name = "abricate"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.0"
+bzip2 = "0.4"
+zstd = "0.13"
+zip = "0.6"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
