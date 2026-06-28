@@ -18,6 +18,7 @@ pub struct ReportRow {
     pub coverage: String,
     pub coverage_map: String,
     pub gaps: i64,
+    pub gapopen: i64,          // 新增
     pub perc_coverage: f64,
     pub perc_identity: f64,
     pub database: String,
@@ -25,6 +26,7 @@ pub struct ReportRow {
     pub product: String,
     pub resistance: String,
 }
+
 
 impl ReportRow {
     /// Header labels for TSV/CSV output
@@ -47,9 +49,8 @@ impl ReportRow {
             "RESISTANCE",
         ]
     }
-
-    /// Convert to a vector of strings for tabular output
-    pub fn to_fields(&self) -> Vec<String> {
+     pub fn to_fields(&self) -> Vec<String> {
+        let gaps_str = format!("{}/{}", self.gapopen, self.gaps);
         vec![
             self.file.clone(),
             self.sequence.clone(),
@@ -59,7 +60,7 @@ impl ReportRow {
             self.gene.clone(),
             self.coverage.clone(),
             self.coverage_map.clone(),
-            self.gaps.to_string(),
+            gaps_str,                     // 改为 gapopen/gaps
             format!("{:.2}", self.perc_coverage),
             format!("{:.2}", self.perc_identity),
             self.database.clone(),
@@ -67,10 +68,34 @@ impl ReportRow {
             self.product.clone(),
             self.resistance.clone(),
         ]
+
+    
     }
 }
+fn format_coverage_map(sstart: i64, send: i64, slen: i64, gapopen: i64) -> String {
+    let broken = gapopen > 0;
+    let width = if broken { 14 } else { 15 };
+    let scale = slen as f64 / width as f64;
+    // 计算索引位置，并约束到 [0, width-1]
+    let x = ((sstart as f64 / scale).round() as i64)
+        .max(0)
+        .min((width - 1) as i64) as usize;
+    let y = ((send as f64 / scale).round() as i64)
+        .max(0)
+        .min((width - 1) as i64) as usize;
+    let mut map = String::with_capacity(width);
+    for i in 0..width {
+        let ch = if i >= x && i <= y { '=' } else { '=' };
+        map.push(ch);
+    }
+    if broken {
+        let mid = width / 2;
+        map.insert(mid, '/');
+    }
+    map
+}
 
-/// Process raw BLAST hits into filtered, deduplicated, sorted report rows
+// 修改 process_hits
 pub fn process_hits(
     hits: Vec<BlastHit>,
     file_name: &str,
@@ -79,10 +104,8 @@ pub fn process_hits(
     mincov: f64,
     nopath: bool,
 ) -> Vec<ReportRow> {
-    let mut rows: Vec<ReportRow> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, i64, i64)> = std::collections::HashSet::new();
-
-    // Display file name: optionally strip path
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let display_file = if nopath {
         std::path::Path::new(file_name)
             .file_name()
@@ -93,54 +116,45 @@ pub fn process_hits(
     };
 
     for hit in hits {
-        // Calculate coverage
         let pccov = if hit.slen > 0 {
             100.0 * (hit.length - hit.gaps) as f64 / hit.slen as f64
         } else {
             0.0
         };
-
-        // Filter by mincov
-        if pccov < mincov {
+        if pccov < mincov || hit.pident < minid {
             continue;
         }
 
-        // Filter by minid (pident)
-        if hit.pident < minid {
-            continue;
-        }
+        // 使用 sstrand 确定方向（假设 hit.sstrand 为 "plus" 或 "minus"）
+        let strand = if hit.sstrand == "minus" { "-" } else { "+" };
 
-        // Determine strand and start/end
-        let (start, end, strand) = if hit.qstart <= hit.qend {
-            (hit.qstart, hit.qend, "+")
-        } else {
-            (hit.qend, hit.qstart, "-")
-        };
+        // 注意：start/end 仍用 qstart/qend（原始坐标，不交换）
+        let (start, end) = (hit.qstart, hit.qend);  // 保留原始值
 
-        // Deduplicate: same qseqid + qstart + qend, keep first
         let key = (hit.qseqid.clone(), start, end);
         if seen.contains(&key) {
             continue;
         }
         seen.insert(key);
 
-        // Parse sseqid (truncated at first space by BLAST) for db/gene/acc/resistance
-        // sseqid format: DB~~~GENE~~~ACCESSION~~~RESISTANCE
         let (sdb, gene, acc, resistance) = blast::parse_sseqid(&hit.sseqid);
 
-        // stitle contains the product description (after the ID in BLAST output)
-        let product = hit.stitle.clone();
+        // 处理 product：若包含 ~~~，去除第一个空格前的标识符
+        let product = if hit.stitle.contains("~~~") {
+            hit.stitle
+                .split_once(' ')
+                .map(|(_, desc)| desc.to_string())
+                .unwrap_or_else(|| hit.stitle.clone())
+        } else {
+            hit.stitle.clone()
+        };
 
-        // Use the actual database name from the hit, or fall back to the provided db_name
-        let db_display = if sdb.is_empty() { db_name.to_string() } else { sdb };
-
-        // Coverage string: sstart-send/slen
         let s_start = hit.sstart.min(hit.send);
         let s_end = hit.sstart.max(hit.send);
         let coverage_str = format!("{}-{}/{}", s_start, s_end, hit.slen);
+        let cov_map = format_coverage_map(hit.sstart, hit.send, hit.slen, hit.gapopen);
 
-        // Coverage map
-        let cov_map = blast::coverage_map(hit.sstart, hit.send, hit.slen);
+        let db_display = if sdb.is_empty() { db_name.to_string() } else { sdb };
 
         rows.push(ReportRow {
             file: display_file.clone(),
@@ -152,6 +166,7 @@ pub fn process_hits(
             coverage: coverage_str,
             coverage_map: cov_map,
             gaps: hit.gaps,
+            gapopen: hit.gapopen,        // 新增
             perc_coverage: pccov,
             perc_identity: hit.pident,
             database: db_display,
@@ -161,15 +176,10 @@ pub fn process_hits(
         });
     }
 
-    // Sort by SEQUENCE name, then START position
-    rows.sort_by(|a, b| {
-        a.sequence
-            .cmp(&b.sequence)
-            .then_with(|| a.start.cmp(&b.start))
-    });
-
+    rows.sort_by(|a, b| a.sequence.cmp(&b.sequence).then_with(|| a.start.cmp(&b.start)));
     rows
 }
+
 
 /// Output format enum
 #[derive(Debug, Clone, Copy)]

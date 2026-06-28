@@ -227,8 +227,6 @@ pub fn make_blast_db(paths: &BlastPaths, sequences_path: &Path, db_type: &str) -
         .arg(&title)
         .arg("-dbtype")
         .arg(dbtype)
-        .arg("-hash_index")
-        .arg("-parse_seqids")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -386,22 +384,22 @@ fn parse_blast_output(output: &str) -> Result<Vec<BlastHit>> {
 
 /// Generate an ASCII coverage map for a hit
 /// Uses '=' for covered positions and '.' for uncovered positions on the subject sequence
-pub fn coverage_map(sstart: i64, send: i64, slen: i64) -> String {
-    if slen <= 0 {
-        return String::new();
-    }
-    let start = sstart.min(send);
-    let end = sstart.max(send);
-    let mut map = String::with_capacity(slen as usize);
-    for i in 1..=slen {
-        if i >= start && i <= end {
-            map.push('=');
-        } else {
-            map.push('.');
-        }
-    }
-    map
-}
+// pub fn coverage_map(sstart: i64, send: i64, slen: i64) -> String {
+//     if slen <= 0 {
+//         return String::new();
+//     }
+//     let start = sstart.min(send);
+//     let end = sstart.max(send);
+//     let mut map = String::with_capacity(slen as usize);
+//     for i in 1..=slen {
+//         if i >= start && i <= end {
+//             map.push('=');
+//         } else {
+//             map.push('.');
+//         }
+//     }
+//     map
+// }
 
 /// Parse a subject sequence ID (sseqid or stitle) into (database, gene, accession, product)
 /// Format: `DB~~~GENE~~~ACCESSION~~~PRODUCT`
